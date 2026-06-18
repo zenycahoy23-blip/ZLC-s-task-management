@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8
+    container_name: tms_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: tms
+      MYSQL_USER: tms_user
+      MYSQL_PASSWORD: tms_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - tms
+
+  php:
+    build:
+      context: ./laravel
+      dockerfile: Dockerfile
+    container_name: tms_php
+    restart: always
+    working_dir: /var/www
+    volumes:
+      - ./laravel:/var/www
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: tms
+      DB_USERNAME: tms_user
+      DB_PASSWORD: tms_password
+      APP_KEY: base64:test123456789012345678901234567890
+      APP_DEBUG: "true"
+      APP_ENV: local
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "9000"
+    networks:
+      - tms
+
+  nginx:
+    image: nginx:alpine
+    container_name: tms_nginx
+    restart: always
+    ports:
+      - "8000:80"
+    volumes:
+      - ./laravel:/var/www
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - php
+    networks:
+      - tms
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tms_frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_APP_NAME: "Task Management System"
+      NODE_ENV: development
+    networks:
+      - tms
+
+  jenkins:
+    image: jenkins/jenkins:lts-alpine
+    container_name: tms_jenkins
+    restart: always
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      JENKINS_OPTS: --httpPort=8080
+    networks:
+      - tms
+
+volumes:
+  mysql_data:
+  jenkins_home:
+
+networks:
+  tms:
+    driver: bridge

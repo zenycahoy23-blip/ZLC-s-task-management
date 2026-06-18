@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8
+    container_name: tms_db_prod
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: ${DB_DATABASE:-tms}
+      MYSQL_USER: ${DB_USERNAME:-tms_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-tms_password}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tms
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  php:
+    image: ${REGISTRY:-docker.io}/${IMAGE_PHP:-indae2/tms-php}:${IMAGE_TAG:-latest}
+    container_name: tms_php_prod
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./laravel:/var/www
+      - php_socket:/var/run/php-fpm
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: ${DB_DATABASE:-tms}
+      DB_USERNAME: ${DB_USERNAME:-tms_user}
+      DB_PASSWORD: ${DB_PASSWORD:-tms_password}
+      APP_KEY: ${APP_KEY:-base64:test123456789012345678901234567890}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_ENV: ${APP_ENV:-production}
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "9000"
+    networks:
+      - tms
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:alpine
+    container_name: tms_nginx_prod
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-8000}:80"
+    volumes:
+      - ./laravel:/var/www
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - php
+    networks:
+      - tms
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    image: ${REGISTRY:-docker.io}/${IMAGE_FRONTEND:-indae2/tms-frontend}:${IMAGE_TAG:-latest}
+    container_name: tms_frontend_prod
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_APP_NAME: ${VITE_APP_NAME:-"Task Management System"}
+      NODE_ENV: ${NODE_ENV:-production}
+    networks:
+      - tms
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  jenkins:
+    image: jenkins/jenkins:lts-alpine
+    container_name: tms_jenkins_prod
+    restart: unless-stopped
+    ports:
+      - "${JENKINS_PORT:-8080}:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      JENKINS_OPTS: "--httpPort=8080"
+    networks:
+      - tms
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mysql_data:
+    driver: local
+  jenkins_home:
+    driver: local
+  php_socket:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  tms:
+    driver: bridge

@@ -1,0 +1,76 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  laravel-test:
+    runs-on: ubuntu-latest
+    
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: tms_test
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        extensions: pdo_mysql, intl, zip
+    
+    - name: Install Composer dependencies
+      working-directory: ./laravel
+      run: composer install --no-interaction --prefer-dist
+    
+    - name: Generate app key
+      working-directory: ./laravel
+      run: php artisan key:generate --env=testing
+    
+    - name: Run migrations
+      working-directory: ./laravel
+      run: php artisan migrate --env=testing --force
+    
+    - name: Run tests
+      working-directory: ./laravel
+      run: php artisan test
+      env:
+        DB_CONNECTION: mysql
+        DB_HOST: 127.0.0.1
+        DB_PORT: 3306
+        DB_DATABASE: tms_test
+        DB_USERNAME: root
+        DB_PASSWORD: root
+
+  nuxt-lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '22'
+    
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm install
+    
+    - name: Build
+      working-directory: ./frontend
+      run: npm run build
