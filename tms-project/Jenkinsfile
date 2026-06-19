@@ -1,6 +1,3 @@
-// TMS Jenkins Pipeline
-// Triggered by GitHub webhooks or manual build
-
 pipeline {
     agent any
     
@@ -8,107 +5,61 @@ pipeline {
         DOCKER_REGISTRY = 'docker.io'
         DOCKER_USERNAME = credentials('docker-username')
         DOCKER_PASSWORD = credentials('docker-password')
-        REGISTRY_URL = "${DOCKER_REGISTRY}"
-        IMAGE_PHP = "${REGISTRY_URL}/indae2/tms-php"
-        IMAGE_FRONTEND = "${REGISTRY_URL}/indae2/tms-frontend"
-        SLACK_WEBHOOK = credentials('slack-webhook')
+        IMAGE_PHP = "docker.io/indae2/tms-php"
+        IMAGE_FRONTEND = "docker.io/indae2/tms-frontend"
     }
     
     stages {
         stage('Checkout') {
             steps {
-                script {
-                    echo '==== Checking out code ===='
-                    checkout scm
-                }
+                echo '==== Checking out code ===='
+                checkout scm
             }
         }
         
         stage('Build PHP Image') {
             steps {
-                script {
-                    echo '==== Building PHP Docker image ===='
-                    dir('laravel') {
-                        sh '''
-                            docker build -t ${IMAGE_PHP}:${BUILD_NUMBER} .
-                            docker tag ${IMAGE_PHP}:${BUILD_NUMBER} ${IMAGE_PHP}:latest
-                        '''
-                    }
-                }
+                echo '==== Building PHP Docker image ===='
+                sh 'cd laravel && docker build -t ${IMAGE_PHP}:${BUILD_NUMBER} . && docker tag ${IMAGE_PHP}:${BUILD_NUMBER} ${IMAGE_PHP}:latest'
             }
         }
         
         stage('Build Frontend Image') {
             steps {
-                script {
-                    echo '==== Building Frontend Docker image ===='
-                    dir('frontend') {
-                        sh '''
-                            docker build -t ${IMAGE_FRONTEND}:${BUILD_NUMBER} .
-                            docker tag ${IMAGE_FRONTEND}:${BUILD_NUMBER} ${IMAGE_FRONTEND}:latest
-                        '''
-                    }
-                }
+                echo '==== Building Frontend Docker image ===='
+                sh 'cd frontend && docker build -t ${IMAGE_FRONTEND}:${BUILD_NUMBER} . && docker tag ${IMAGE_FRONTEND}:${BUILD_NUMBER} ${IMAGE_FRONTEND}:latest'
             }
         }
         
         stage('Push to Docker Hub') {
             steps {
-                script {
-                    echo '==== Pushing images to Docker Hub ===='
-                    sh '''
-                        echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin
-                        docker push ${IMAGE_PHP}:${BUILD_NUMBER}
-                        docker push ${IMAGE_PHP}:latest
-                        docker push ${IMAGE_FRONTEND}:${BUILD_NUMBER}
-                        docker push ${IMAGE_FRONTEND}:latest
-                        docker logout
-                    '''
-                }
+                echo '==== Pushing images to Docker Hub ===='
+                sh '''
+                    echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin
+                    docker push ${IMAGE_PHP}:${BUILD_NUMBER}
+                    docker push ${IMAGE_PHP}:latest
+                    docker push ${IMAGE_FRONTEND}:${BUILD_NUMBER}
+                    docker push ${IMAGE_FRONTEND}:latest
+                    docker logout
+                '''
             }
         }
         
-        stage('Deploy') {
+        stage('Verify Deploy') {
             steps {
-                script {
-                    echo '==== Deployment Ready ===='
-                    echo "PHP Image: ${IMAGE_PHP}:${BUILD_NUMBER}"
-                    echo "Frontend Image: ${IMAGE_FRONTEND}:${BUILD_NUMBER}"
-                }
+                echo "✅ Images ready for deployment"
+                echo "PHP: ${IMAGE_PHP}:${BUILD_NUMBER}"
+                echo "Frontend: ${IMAGE_FRONTEND}:${BUILD_NUMBER}"
             }
         }
     }
     
     post {
         success {
-            script {
-                echo '==== Build Successful ===='
-                // Send Slack notification
-                sh '''
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text":"✅ Jenkins Build Successful\\nRepository: ZLC-s-task-management\\nBuild: #'${BUILD_NUMBER}'\\nImages: indae2/tms-php:'${BUILD_NUMBER}' and indae2/tms-frontend:'${BUILD_NUMBER}'"}' \
-                    ${SLACK_WEBHOOK} || true
-                '''
-            }
+            echo '✅ Build completed successfully!'
         }
-        
         failure {
-            script {
-                echo '==== Build Failed ===='
-                // Send Slack notification
-                sh '''
-                    curl -X POST -H 'Content-type: application/json' \
-                    --data '{"text":"❌ Jenkins Build Failed\\nRepository: ZLC-s-task-management\\nBuild: #'${BUILD_NUMBER}'\\nCheck logs at: http://localhost:8080/job/tms-ci-cd/'${BUILD_NUMBER}'/console"}' \
-                    ${SLACK_WEBHOOK} || true
-                '''
-            }
-        }
-        
-        always {
-            script {
-                echo '==== Cleaning up ===='
-                cleanWs()
-            }
+            echo '❌ Build failed - check logs above'
         }
     }
 }
