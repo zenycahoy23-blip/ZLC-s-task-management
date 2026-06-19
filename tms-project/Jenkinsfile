@@ -1,211 +1,113 @@
+// TMS Jenkins Pipeline
+// Triggered by GitHub webhooks or manual build
+
 pipeline {
     agent any
-
-    parameters {
-        string(name: 'DOCKER_REGISTRY', defaultValue: 'docker.io', description: 'Docker Registry')
-        string(name: 'DOCKER_CREDENTIALS_ID', defaultValue: 'docker-credentials', description: 'Docker Credentials ID')
-        string(name: 'ADMIN_EMAIL', defaultValue: 'admin@taskmanager.com', description: 'Admin Email for Notifications')
-    }
-
+    
     environment {
-        DOCKER_COMPOSE_VERSION = '2.20.0'
-        PROJECT_PATH = '${WORKSPACE}'
-        SCHEMA_FILE = '${WORKSPACE}/schema.sql'
-        POSTGRES_CONTAINER = 'postgres-tms'
-        POSTGRES_DB = 'tms'
-        POSTGRES_USER = 'tms_user'
-        POSTGRES_PASSWORD = 'tms_password'
+        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_USERNAME = credentials('docker-username')
+        DOCKER_PASSWORD = credentials('docker-password')
+        REGISTRY_URL = "${DOCKER_REGISTRY}"
+        IMAGE_PHP = "${REGISTRY_URL}/indae2/tms-php"
+        IMAGE_FRONTEND = "${REGISTRY_URL}/indae2/tms-frontend"
+        SLACK_WEBHOOK = credentials('slack-webhook')
     }
-
+    
     stages {
-        stage('Fix Docker Permissions') {
-            steps {
-                script {
-                    echo '========== Fixing Docker Socket Permissions =========='
-                    sh '''
-                        chmod 666 /var/run/docker.sock || true
-                        docker ps
-                    '''
-                }
-            }
-        }
-
-        stage('Clean Workspace') {
-            steps {
-                script {
-                    echo '========== Cleaning Workspace =========='
-                    cleanWs()
-                }
-            }
-        }
-
         stage('Checkout') {
             steps {
                 script {
-                    echo '========== Checking Out Repository =========='
+                    echo '==== Checking out code ===='
                     checkout scm
-                    sh 'ls -la'
                 }
             }
         }
-
-        stage('Build') {
+        
+        stage('Build PHP Image') {
             steps {
                 script {
-                    echo '========== Building Docker Images =========='
+                    echo '==== Building PHP Docker image ===='
+                    dir('laravel') {
+                        sh '''
+                            docker build -t ${IMAGE_PHP}:${BUILD_NUMBER} .
+                            docker tag ${IMAGE_PHP}:${BUILD_NUMBER} ${IMAGE_PHP}:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Frontend Image') {
+            steps {
+                script {
+                    echo '==== Building Frontend Docker image ===='
+                    dir('frontend') {
+                        sh '''
+                            docker build -t ${IMAGE_FRONTEND}:${BUILD_NUMBER} .
+                            docker tag ${IMAGE_FRONTEND}:${BUILD_NUMBER} ${IMAGE_FRONTEND}:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    echo '==== Pushing images to Docker Hub ===='
                     sh '''
-                        cd ${PROJECT_PATH}
-                        docker-compose build
+                        echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USERNAME} --password-stdin
+                        docker push ${IMAGE_PHP}:${BUILD_NUMBER}
+                        docker push ${IMAGE_PHP}:latest
+                        docker push ${IMAGE_FRONTEND}:${BUILD_NUMBER}
+                        docker push ${IMAGE_FRONTEND}:latest
+                        docker logout
                     '''
                 }
             }
         }
-
+        
         stage('Deploy') {
             steps {
                 script {
-                    echo '========== Starting Deployment =========='
-                    
-                    // Remove only the specified containers (NOT jenkins-tms)
-                    sh '''
-                        echo "Stopping and removing containers (except jenkins-tms)..."
-                        docker-compose rm -f postgres backend frontend prometheus grafana 2>/dev/null || true
-                    '''
-                    
-                    // Start postgres and wait for it to be healthy
-                    sh '''
-                        echo "Starting PostgreSQL container..."
-                        cd ${PROJECT_PATH}
-                        docker-compose up -d postgres
-                        
-                        echo "Waiting for PostgreSQL to be healthy..."
-                        for i in {1..30}; do
-                            if docker-compose exec -T postgres pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} > /dev/null 2>&1; then
-                                echo "PostgreSQL is healthy!"
-                                break
-                            fi
-                            echo "Waiting... ($i/30)"
-                            sleep 1
-                        done
-                    '''
-                    
-                    // Apply schema to PostgreSQL
-                    sh '''
-                        echo "Applying database schema..."
-                        if [ -f ${SCHEMA_FILE} ]; then
-                            docker cp ${SCHEMA_FILE} ${POSTGRES_CONTAINER}:/schema.sql
-                            docker-compose exec -T postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -f /schema.sql
-                            echo "Schema applied successfully!"
-                        else
-                            echo "ERROR: schema.sql not found at ${SCHEMA_FILE}"
-                            exit 1
-                        fi
-                    '''
-                    
-                    // Insert admin user with ON CONFLICT DO NOTHING
-                    sh '''
-                        echo "Ensuring admin user exists..."
-                        docker-compose exec -T postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} <<EOF
-INSERT INTO users (id, name, email, password, role_id, email_verified, created_at)
-VALUES (1, 'Admin', 'admin@taskmanager.com', '\$2a\$10\$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 1, true, NOW())
-ON CONFLICT (id) DO NOTHING;
-EOF
-                    '''
-                    
-                    // Start remaining services with --no-recreate
-                    sh '''
-                        echo "Starting remaining services..."
-                        cd ${PROJECT_PATH}
-                        docker-compose up -d --no-recreate backend frontend prometheus grafana
-                    '''
-                }
-            }
-        }
-
-        stage('Health Check') {
-            steps {
-                script {
-                    echo '========== Running Health Checks =========='
-                    sh '''
-                        echo "Waiting for services to stabilize..."
-                        sleep 10
-                        
-                        echo "Checking backend health..."
-                        for i in {1..30}; do
-                            if curl -f http://localhost:8082/api/health > /dev/null 2>&1; then
-                                echo "Backend is healthy!"
-                                break
-                            fi
-                            echo "Waiting for backend... ($i/30)"
-                            sleep 1
-                        done
-                        
-                        echo "Checking services..."
-                        curl http://localhost:8082/api/health || true
-                    '''
-                }
-            }
-        }
-
-        stage('Status') {
-            steps {
-                script {
-                    echo '========== Container Status =========='
-                    sh '''
-                        cd ${PROJECT_PATH}
-                        docker-compose ps
-                    '''
+                    echo '==== Deployment Ready ===='
+                    echo "PHP Image: ${IMAGE_PHP}:${BUILD_NUMBER}"
+                    echo "Frontend Image: ${IMAGE_FRONTEND}:${BUILD_NUMBER}"
                 }
             }
         }
     }
-
+    
     post {
         success {
             script {
-                emailext(
-                    recipientProviders: [developers(), requestor()],
-                    to: '${ADMIN_EMAIL}',
-                    subject: "Jenkins Build SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    body: '''
-                        Build succeeded!
-                        
-                        Project: ${JOB_NAME}
-                        Build Number: ${BUILD_NUMBER}
-                        Build Status: SUCCESS
-                        
-                        Build URL: ${BUILD_URL}
-                        
-                        Services running:
-                        - Backend: http://localhost:8082
-                        - Frontend: http://localhost:9030
-                        - Prometheus: http://localhost:9090
-                        - Grafana: http://localhost:3000
-                        
-                        Please check the services are accessible.
-                    '''
-                )
+                echo '==== Build Successful ===='
+                // Send Slack notification
+                sh '''
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text":"✅ Jenkins Build Successful\\nRepository: ZLC-s-task-management\\nBuild: #'${BUILD_NUMBER}'\\nImages: indae2/tms-php:'${BUILD_NUMBER}' and indae2/tms-frontend:'${BUILD_NUMBER}'"}' \
+                    ${SLACK_WEBHOOK} || true
+                '''
             }
         }
+        
         failure {
             script {
-                emailext(
-                    recipientProviders: [developers(), requestor()],
-                    to: '${ADMIN_EMAIL}',
-                    subject: "Jenkins Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    body: '''
-                        Build failed!
-                        
-                        Project: ${JOB_NAME}
-                        Build Number: ${BUILD_NUMBER}
-                        Build Status: FAILED
-                        
-                        Build URL: ${BUILD_URL}
-                        Console: ${BUILD_URL}console
-                        
-                        Please check the console output for errors.
-                    '''
-                )
+                echo '==== Build Failed ===='
+                // Send Slack notification
+                sh '''
+                    curl -X POST -H 'Content-type: application/json' \
+                    --data '{"text":"❌ Jenkins Build Failed\\nRepository: ZLC-s-task-management\\nBuild: #'${BUILD_NUMBER}'\\nCheck logs at: http://localhost:8080/job/tms-ci-cd/'${BUILD_NUMBER}'/console"}' \
+                    ${SLACK_WEBHOOK} || true
+                '''
+            }
+        }
+        
+        always {
+            script {
+                echo '==== Cleaning up ===='
+                cleanWs()
             }
         }
     }
